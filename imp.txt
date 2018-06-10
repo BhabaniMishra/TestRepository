@@ -1,0 +1,21 @@
+ 
+Test Planning with Test Hub on Visual Studio Online
+https://channel9.msdn.com/Blogs/Test-Case-Management-with-Visual-Studio-Online/Test-Planning-with-Test-Hub-on-Visual-Studio-Online
+ 
+Creating test cases with Test Hub on Visual Studio Online
+https://channel9.msdn.com/Blogs/Test-Case-Management-with-Visual-Studio-Online/Creating-test-cases-with-Test-Hub-on-Visual-Studio-Online
+ 
+Managing test steps and test data with Test Hub on Visual Studio Online
+https://channel9.msdn.com/Blogs/Test-Case-Management-with-Visual-Studio-Online/Managing-test-steps-and-test-data-with-Test-Hub-on-Visual-Studio-Online
+ 
+The Exploratory Testing extension is now Test & Feedback.
+https://www.youtube.com/watch?v=VSACs4QRnuI&feature=youtu.be
+ 
+Please let me know if more details are required.
+
+C:\jmeter\apache-jmeter-3.2\bin
+
+java -jar ApacheJmeter.jar
+
+webtour
+your ip:1800/webTours
