@@ -1,0 +1,388 @@
+/****** Object:  StoredProcedure [dbo].[Proc_GetARData_SSRS_R]    Script Date: 08/14/2013 17:01:40 ******/
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[Proc_GetARData_SSRS_R]') AND type in (N'P', N'PC'))
+DROP PROCEDURE [dbo].[Proc_GetARData_SSRS_R]
+GO
+ 
+ 
+/****** Object:  StoredProcedure [dbo].[Proc_GetARData_SSRS_R]    Script Date: 08/14/2013 17:01:40 ******/
+SET ANSI_NULLS ON
+GO
+ 
+SET QUOTED_IDENTIFIER OFF
+GO
+ 
+/******************************************************************************************************************
+*  Type               :    Procedure
+*  Name               :    Proc_GetARData_SSRS_R
+*  Input Parameters   :           @ReportType [0 = Company, 1 = Agent Family, 2 = Agent, 3 = State, 4 = Regional Manager, 5 = Agent Type],
+                                                @SearchId, @AgentIds, @AgentStatusId, @AsOfDate, @GLCodeMasterId, @UnappliedCredit
+*  Output Parameters  :          
+*  Purpose            :    This proc is used to retrieve AR records
+*  Created Date       :    06/20/2013
+*  Created By         :    Cognizant
+*  Return Value       :     Success 0
+*                     :     Failure -99
+*  Assumptions        :     None
+*  Dependencies       :     None
+*  ----------------------------------------------------------------------------------------------------------------- 
+Usage::
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 0, -1, '',-1, '06/30/2013', -1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 1, 27, '882,879,872',-1, '06/30/2013', -1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 1, -1, '599,833,714',-1, '06/30/2013', 1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 2, -1, '882', -1, '06/30/2013', -1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 3, 46, '', -1, '06/30/2013', -1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 4, -1, '', -1, '06/30/2013', -1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 5, 39, '', -1, '06/30/2013', -1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 1, 20, '', -1, '06/30/2013', 1, -1
+       EXEC [dbo].[Proc_GetARData_SSRS_R] 1, 20, '', -1, '06/30/2013', 2, 1
+* -------------------------------------------------------------------------------------------------------------------  
+* Modified Date         Modified By     Revision Number         Modifications      
+* -------------------------------------------------------------------------------------------------------------------       
+* 07/16/2013            Cognizant       1.1                     Modified to fetch revenue data by date instead of by month
+* 08/05/2013            Cognizant       1.2                     Added AgentIds logic
+* 08/07/2013            Cognizant       1.3                     Defect Id- 22769 fixed and Modified the logic of GL Code data
+* 08/08/2013            Cognizant       1.4                     Modified for CCR_334 & Defect Id #22769
+* 08/12/2013               Cognizant       1.5                     Include Glcode logic - 'ALL'
+* 08/13/2013               Cognizant            1.6                                      Excluding the pending agents
+* 08/29/2013               Cognizant       1.7                     TRUE 3.1 related changes
+*********************************************************************************************************************/   
+CREATE PROCEDURE [dbo].[Proc_GetARData_SSRS_R]
+       @ReportType                INT,
+       @SearchId                  INT,
+       @AgentIds                  VARCHAR(MAX),
+       @AgentStatusId             INT,
+       @AsOfDate                  DATETIME,
+       @GLCodeMasterId            INT,
+       @UnappliedCredit     INT
+AS                     
+BEGIN
+       SET NOCOUNT ON
+      
+       DECLARE @ErrorMsg                               VARCHAR(1000),
+                     @ActiveFlag                              BIT,
+                     @GLPassThrough                           VARCHAR(100)  = 'Pass-Through',
+                     @GLPremium                               VARCHAR(100)  = 'Premium',               --DT: 08/07/2013
+                     @ExcludedGLCodeMasterId           INT,                      
+                     @PremiumGLCodeMasterId            INT,                                                          --DT: 08/07/2013
+                     @AgentIdList                      VARCHAR(MAX),                                          --Dt: 08/08/2013
+                     @PendingStatusId                  INT,                                                          -- Dt:-08/13/2013
+                     @PendingStatusCode                VARCHAR(100)  = 'CONTPENDI'              -- Dt:-08/13/2013
+ 
+       IF ISDATE(@AsOfDate) = 0
+       BEGIN
+              SET @AsOfDate = CONVERT(DATE,GETDATE())
+       END
+ 
+       DECLARE @ResultSetTempTable TABLE
+       (
+              AgentId                                  INT,  
+              AgentName                         VARCHAR(255),
+              AgentType                         VARCHAR(100),
+              GLCodeMasterId                    INT,                              --Dt: 08/07/2013
+              GLAccountName              VARCHAR(100),
+              AMT180                            MONEY,
+              AMT90                             MONEY,
+              AMT60                             MONEY,
+              AMT30                             MONEY,
+              AMT0                              MONEY,
+              AMT                                      MONEY,
+              Paid                              MONEY,
+              PaidBalance                       MONEY
+       )
+ 
+       BEGIN TRY
+ 
+              IF(ISNULL(@ReportType, -1) NOT IN (0,1,2,3,4,5))
+              BEGIN
+                     SET @ErrorMsg = 'Please provide proper Input Params.'
+                     RAISERROR(@ErrorMsg, 16, 1)
+              END
+ 
+              SELECT @ActiveFlag                       = 1,
+                           @AgentIdList               = CASE @ReportType WHEN 2 THEN
+                                                                           CASE WHEN (@SearchId = -1 AND ISNULL(@AgentIds,'') = '') THEN '-1'
+                                                                           ELSE @AgentIds END
+                                                                       ELSE
+                                                                           CASE WHEN ISNULL(@AgentIds,'') = '' THEN '-1' ELSE @AgentIds END
+                                                                       END,                                                       --Dt: 08/08/2013
+                           @ExcludedGLCodeMasterId    = CASE WHEN GLAccountName = @GLPassThrough THEN G.GLCodeMasterId ELSE @ExcludedGLCodeMasterId END,            --DT: 08/07/2013
+                           @PremiumGLCodeMasterId     = CASE WHEN GLAccountName = @GLPremium THEN G.GLCodeMasterId ELSE @PremiumGLCodeMasterId END                     --DT: 08/07/2013
+              FROM GLCodeMaster G WITH(NOLOCK)
+ 
+              SELECT @PendingStatusId = SM.StatusMasterId                                                                                                                         -- Dt:-08/13/2013
+              FROM   StatusMaster SM WITH(NOLOCK)
+              WHERE  SM.StatusCode = @PendingStatusCode
+      
+              INSERT @ResultSetTempTable
+              (
+                     AgentId,                  
+                     AgentName,                
+                     AgentType,
+                     GLCodeMasterId,                                                      --Dt: 08/07/2013
+                     GLAccountName,                                                       --Dt: 07/01/2013                    
+                     AMT180,                   
+                     AMT90,              
+                     AMT60,              
+                     AMT30,              
+                     AMT0,               
+                     AMT,                             
+                     Paid
+              )
+              SELECT A.AgentId                                AS AgentId
+                           ,C.ContactName                           AS AgentName
+                           ,SCT.SubContactTypeName           AS AgentType
+                           ,GL.GLCodeMasterId                AS GLCodeMasterId    --Dt: 08/07/2013
+                           ,GL.GLAccountName                 AS GLAccountName     --Dt: 07/01/2013     --Dt: 08/07/2013
+                           ,ISNULL(SUM( 
+                                  CASE WHEN DATEDIFF(DAY,VR.ReportDate,@AsOfDate) > 180 THEN ISNULL(VR.RevenueNet,0) END       --Dt: 08/29/2014
+                           ),0) AS 'AMT180'
+                           ,ISNULL(SUM( 
+                                  CASE WHEN DATEDIFF(DAY,VR.ReportDate,@AsOfDate) BETWEEN 91 AND 180                                            --Dt: 08/29/2014
+                                         THEN ISNULL(VR.RevenueNet,0) END
+                           ),0) AS 'AMT90'
+                           ,ISNULL(SUM( 
+                                  CASE WHEN DATEDIFF(DAY,VR.ReportDate,@AsOfDate) BETWEEN 61 AND 90                                             --Dt: 08/29/2014
+                                         THEN ISNULL(VR.RevenueNet,0) END
+                           ),0) AS 'AMT60'
+                           ,ISNULL(SUM( 
+                                  CASE WHEN DATEDIFF(DAY,VR.ReportDate,@AsOfDate) BETWEEN 31 AND 60                                             --Dt: 08/29/2014
+                                         THEN ISNULL(VR.RevenueNet,0) END
+                           ),0) AS 'AMT30'
+                           ,ISNULL(SUM( 
+                                  CASE WHEN DATEDIFF(DAY,VR.ReportDate,@AsOfDate) BETWEEN 0 AND 30                                              --Dt: 08/29/2014
+                                         THEN ISNULL(VR.RevenueNet,0) END
+                           ),0) AS 'AMT0'
+                           ,ISNULL(SUM(ISNULL(VR.RevenueNet,0)),0) AS 'AMT'
+                           ,(
+                                  SELECT ISNULL(SUM(RP.PaymentAmount),0) FROM RemitPayment RP WITH(NOLOCK)
+                                  WHERE RP.AgentId = A.AgentId AND RP.GLCodeMasterId = GL.GLCodeMasterId                     --Dt: 08/07/2013
+                                  AND RP.CreatedDate < DATEADD(DAY, 1, @AsOfDate)
+                           ) AS 'Paid'
+              FROM Agent A WITH(NOLOCK)
+              INNER JOIN Contact C                     WITH(NOLOCK) ON A.ContactId = C.ContactId AND C.ActiveFlag = @ActiveFlag
+              LEFT JOIN SubContactTypeMaster SCT WITH(NOLOCK) ON      C.SubContactTypeMasterId = SCT.SubContactTypeMasterId AND SCT.ActiveFlag = @ActiveFlag
+              CROSS JOIN GLCodeMaster GL               WITH(NOLOCK)                                                                                                               --Dt: 08/07/2013
+              LEFT JOIN View_Revenue_Day VR            WITH(NOLOCK) ON A.AgentId = VR.AgentId
+                                                                                                       AND VR.GLCodeMasterId = GL.GLCodeMasterId                                      --Dt: 08/07/2013
+                                                                                                       AND VR.RevenueDate < DATEADD(DAY, 1, @AsOfDate)                                --Dt: 07/16/2013
+              WHERE
+              1 = CASE WHEN @ReportType = 2 AND ISNULL(@SearchId, -1) <> -1 THEN                 -- SEARCH BY AGENT 
+                                  CASE WHEN A.AgentId = @SearchId   THEN 1 ELSE 0 END
+                           ELSE 1
+                           END
+              AND 1 = CASE WHEN @ReportType = 3 AND ISNULL(@SearchId, -1) <> -1 THEN                   -- SEARCH BY AGENT STATE
+                           CASE WHEN A.GeographyMasterId = @SearchId THEN 1 ELSE 0 END
+                     ELSE 1
+                     END
+              AND 1 = CASE WHEN @ReportType = 4 AND ISNULL(@SearchId, -1) <> -1 THEN                   -- SEARCH BY AGENT REGIONAL MANAGER
+                           CASE WHEN A.OwnerId = @SearchId THEN 1 ELSE 0 END
+                     ELSE 1
+                     END
+              AND 1 = CASE WHEN @ReportType = 5 AND ISNULL(@SearchId, -1) <> -1 THEN                   -- SEARCH BY AGENT TYPE
+                           CASE WHEN SCT.SubContactTypeMasterId = @SearchId THEN 1 ELSE 0 END
+                     ELSE 1
+                     END
+              AND A.TestAgent =  CASE WHEN ISNULL(@AgentIdList, '-1') = '-1' THEN 0                                                             --Dt:-08/07/2013
+                           ELSE A.TestAgent
+                           END
+              AND 1 = CASE WHEN ISNULL(@AgentStatusId, -1) <> -1 THEN
+                           CASE WHEN A.AgentStatusMasterId = @AgentStatusId THEN 1 ELSE 0 END
+                     ELSE 1
+                     END
+              AND 1 = CASE WHEN ISNULL(@GLCodeMasterId, -1) > 0 THEN                                                                                   --Dt: 08/12/2013
+                           CASE WHEN GL.GLCodeMasterId = @GLCodeMasterId THEN 1 ELSE 0 END                                       --Dt: 08/07/2013
+                     ELSE
+                           CASE WHEN GL.GLCodeMasterId <> @ExcludedGLCodeMasterId THEN 1 ELSE 0 END                 --Dt: 08/07/2013
+                     END
+              AND 1 = CASE WHEN ISNULL(@AgentIdList, '-1') = '-1' OR @AgentIdList = '' THEN 1
+                     ELSE
+                           CASE WHEN EXISTS(SELECT 1 FROM dbo.Func_Split(@AgentIdList, ',') WHERE VALUE = CONVERT(VARCHAR,A.AgentId)) THEN 1
+                           ELSE 0
+                           END
+                     END
+              AND    A.AgentStatusMasterId <> @PendingStatusId                                                                                                                           --Dt:-08/13/2013
+              GROUP BY
+                     A.AgentId
+                     ,C.ContactName
+                     ,SCT.SubContactTypeName
+                     ,GL.GLCodeMasterId
+                     ,GL.GLAccountName
+ 
+              UPDATE @ResultSetTempTable SET PaidBalance      =      R.Paid FROM @ResultSetTempTable R
+ 
+              UPDATE @ResultSetTempTable
+              SET
+                     AMT180        =      CASE WHEN R.AMT180 > R.PaidBalance THEN (R.AMT180 - R.PaidBalance) ELSE 0 END,
+                     PaidBalance   =      CASE WHEN R.AMT180 > R.PaidBalance THEN 0 ELSE (R.PaidBalance - R.AMT180) END       
+              FROM @ResultSetTempTable R
+              WHERE R.PaidBalance <> 0  
+ 
+              UPDATE @ResultSetTempTable
+              SET
+                     AMT90         =      CASE WHEN R.AMT90 > R.PaidBalance THEN (R.AMT90 - R.PaidBalance) ELSE 0 END,
+                     PaidBalance   =      CASE WHEN R.AMT90 > R.PaidBalance THEN 0 ELSE (R.PaidBalance - R.AMT90) END        
+              FROM @ResultSetTempTable R
+              WHERE R.PaidBalance <> 0
+ 
+              UPDATE @ResultSetTempTable
+              SET
+                     AMT60         =      CASE WHEN R.AMT60 > R.PaidBalance THEN (R.AMT60 - R.PaidBalance) ELSE 0 END,
+                     PaidBalance   =      CASE WHEN R.AMT60 > R.PaidBalance THEN 0 ELSE (R.PaidBalance - R.AMT60) END        
+              FROM @ResultSetTempTable R
+              WHERE R.PaidBalance <> 0
+ 
+              UPDATE @ResultSetTempTable
+              SET
+                     AMT30         =      CASE WHEN R.AMT30 > R.PaidBalance THEN (R.AMT30 - R.PaidBalance) ELSE 0 END,
+                     PaidBalance   =      CASE WHEN R.AMT30 > R.PaidBalance THEN 0 ELSE (R.PaidBalance - R.AMT30) END        
+              FROM @ResultSetTempTable R
+              WHERE R.PaidBalance <> 0
+ 
+              UPDATE @ResultSetTempTable
+              SET
+                     AMT0          =      (R.AMT0 - R.PaidBalance),
+                     PaidBalance   =      (R.PaidBalance - R.AMT0)
+              FROM @ResultSetTempTable R
+              WHERE R.PaidBalance <> 0
+ 
+              IF(@ReportType = 1)
+              BEGIN
+                     SELECT
+                           CG.ContactGroupMasterId AS AgentFamilyId,       ISNULL(CG.ContactGroupName, '') AS AgentFamilyName,       
+                           R.AgentId,                                                           A.AgentNo,                          
+                           R.AgentName,                                                  CONVERT(VARCHAR(15),A.AgentNo) + ' - ' + R.AgentName AS AgentInfo,
+                           GM.StateName,
+                           R.AgentType,                                                  SM.StatusName,
+                           ISNULL(PO.FirstName , '')
+                           + ISNULL(' ' + PO.MiddleName, '')
+                           + ISNULL(' ' + PO.LastName, '')   AS RegionalManager,
+                           ISNULL(PR.FirstName , '')
+                           + ISNULL(' ' + PR.MiddleName, '')
+                           + ISNULL(' ' + PR.LastName, '')   AS AgentRepresentative,
+                           CASE @GLCodeMasterId WHEN -2 THEN 'ALL' ELSE    R.GLAccountName      END AS GLAccountName,
+                           SUM(R.AMT180) AS AMT180,                        SUM(R.AMT90) AS AMT90,                         
+                           SUM(R.AMT60)  AS AMT60,                         SUM(R.AMT30) AS AMT30,
+                           SUM(R.AMT0)          AS AMT0,                                                            
+                           SUM(R.AMT)           AS AMT,                                 
+                           SUM(R.Paid)          AS Paid              ,             SUM(R.AMT) -SUM(R.Paid) 'Total'                   
+                     FROM @ResultSetTempTable R
+                     INNER JOIN Agent A                              WITH(NOLOCK) ON R.AgentId                              = A.AgentId
+                     INNER JOIN StatusMaster SM               WITH(NOLOCK) ON A.AgentStatusMasterId           = SM.StatusMasterId
+                     INNER JOIN GeographyMaster GM            WITH(NOLOCK) ON A.GeographyMasterId                    = GM.GeographyMasterId
+                     LEFT  JOIN TRUser TRUO                          WITH(NOLOCK) ON A.OwnerId                              = TRUO.TRUserId
+                                                                                                              AND TRUO.ActiveFlag               = @ActiveFlag
+                     LEFT  JOIN Person PO                     WITH(NOLOCK) ON TRUO.PersonId                          = PO.PersonId
+                     LEFT JOIN TRUser TRUR                           WITH(NOLOCK) ON A.UserRepId                            = TRUR.TRUserId
+                                                                                                              AND TRUR.ActiveFlag               = @ActiveFlag
+                     LEFT JOIN Person PR                             WITH(NOLOCK) ON TRUR.PersonId                          = PR.PersonId
+                     LEFT JOIN AgentGroupXREF AGX             WITH(NOLOCK) ON R.AgentId                              = AGX.AgentId
+                                                                                                              AND AGX.ActiveFlag                = @ActiveFlag
+                     LEFT JOIN ContactGroupMaster CG          WITH(NOLOCK) ON AGX.ContactGroupMasterId = CG.ContactGroupMasterId
+                                                                                                              AND CG.ActiveFlag                 = @ActiveFlag
+                     WHERE
+                     1 = CASE WHEN ISNULL(@SearchId, -1) <> -1 THEN
+                                  CASE WHEN AGX.ContactGroupMasterId = @SearchId THEN 1 ELSE 0 END
+                           ELSE 1
+                           END
+                     GROUP BY      R.AgentId,                                                                                                                                                                  --Dt:- 08/12/2013                                       
+                                         A.AgentNo,
+                                         R.AgentName,
+                                         A.AgentNo,
+                                         R.AgentName,
+                                         GM.StateName,
+                                         R.AgentType,
+                                         SM.StatusName,
+                                         PO.FirstName,
+                                         PO.LastName,
+                                         PO.MiddleName,
+                                         PR.FirstName,
+                                         PR.LastName,
+                                         PR.MiddleName,
+                                         CG.ContactGroupMasterId,
+                                         CG.ContactGroupName,
+                                         CASE @GLCodeMasterId WHEN -2 THEN 'ALL' ELSE    R.GLAccountName       END
+                     HAVING 1 =CASE WHEN ISNULL(@UnappliedCredit, -1) <> -1 THEN                                                                                                         --Dt:- 08/12/2013
+                                         CASE @UnappliedCredit WHEN 0 THEN
+                                                CASE WHEN (SUM(R.AMT) - SUM(R.Paid)) >= 0 THEN 1 ELSE 0 END
+                                         ELSE
+                                                CASE WHEN (SUM(R.AMT) - SUM(R.Paid)) < 0 THEN 1 ELSE 0 END
+                                         END
+                                  ELSE 1
+                                  END
+                     ORDER BY CG.ContactGroupMasterId, R.AgentName         
+              END
+              ELSE
+              BEGIN
+                     SELECT
+                           NULL AS AgentFamilyId,            '' AS AgentFamilyName,           
+                           R.AgentId,                               A.AgentNo,                       
+                           R.AgentName,                      CONVERT(VARCHAR(15),A.AgentNo) + ' - ' + R.AgentName AS AgentInfo,
+                           GM.StateName,
+                           R.AgentType,                      SM.StatusName,
+                           ISNULL(PO.FirstName , '')
+                           + ISNULL(' ' + PO.MiddleName, '')
+                           + ISNULL(' ' + PO.LastName, '')   AS RegionalManager,
+                           ISNULL(PR.FirstName , '')
+                           + ISNULL(' ' + PR.MiddleName, '')
+                           + ISNULL(' ' + PR.LastName, '')   AS AgentRepresentative,
+                           CASE @GLCodeMasterId WHEN -2 THEN 'ALL' ELSE    R.GLAccountName      END AS GLAccountName,
+                           SUM(R.AMT180) AS AMT180,                        SUM(R.AMT90) AS AMT90,                         
+                           SUM(R.AMT60)  AS AMT60,                         SUM(R.AMT30) AS AMT30,
+                           SUM(R.AMT0)          AS AMT0,                                                            
+                           SUM(R.AMT)           AS AMT,                                 
+                           SUM(R.Paid)          AS Paid       ,             SUM(R.AMT) -SUM(R.Paid) 'Total'                    
+                     FROM @ResultSetTempTable R
+                     INNER JOIN Agent A                              WITH(NOLOCK) ON R.AgentId                       = A.AgentId
+                     INNER JOIN StatusMaster SM               WITH(NOLOCK) ON A.AgentStatusMasterId    = SM.StatusMasterId
+                     INNER JOIN GeographyMaster GM            WITH(NOLOCK) ON A.GeographyMasterId             = GM.GeographyMasterId
+                     LEFT  JOIN TRUser TRUO                          WITH(NOLOCK) ON A.OwnerId                       = TRUO.TRUserId
+                                                                                                              AND TRUO.ActiveFlag        = @ActiveFlag
+                     LEFT  JOIN Person PO                     WITH(NOLOCK) ON TRUO.PersonId                   = PO.PersonId
+                     LEFT JOIN TRUser TRUR                           WITH(NOLOCK) ON A.UserRepId                     = TRUR.TRUserId
+                                                                                                              AND TRUR.ActiveFlag        = @ActiveFlag
+                     LEFT JOIN Person PR                             WITH(NOLOCK) ON TRUR.PersonId                   = PR.PersonId
+                     GROUP BY      R.AgentId,                                                                                                                                                    --Dt:- 08/12/2013
+                                         A.AgentNo,
+                                         R.AgentName,
+                                         A.AgentNo,
+                                         R.AgentName,
+                                         GM.StateName,
+                                         R.AgentType,
+                                         SM.StatusName,
+                                         PO.FirstName,
+                                         PO.LastName,
+                                         PO.MiddleName,
+                                         PR.FirstName,
+                                         PR.LastName,
+                                         PR.MiddleName,
+                                         CASE @GLCodeMasterId WHEN -2 THEN 'ALL' ELSE    R.GLAccountName       END
+                     HAVING 1 =CASE WHEN ISNULL(@UnappliedCredit, -1) <> -1 THEN                                                                                            --Dt:- 08/12/2013
+                                         CASE @UnappliedCredit WHEN 0 THEN
+                                                CASE WHEN (SUM(R.AMT) - SUM(R.Paid)) >= 0 THEN 1 ELSE 0 END
+                                         ELSE
+                                                CASE WHEN (SUM(R.AMT) - SUM(R.Paid)) < 0 THEN 1 ELSE 0 END
+                                         END
+                                  ELSE 1
+                                  END
+                     ORDER BY R.AgentName               
+              END
+       END TRY
+   
+       BEGIN CATCH
+ 
+              SET @ErrorMsg = ERROR_MESSAGE()                 + ' Line Num:'       + CONVERT(VARCHAR(5),
+                                         ERROR_LINE())              + ',ErrorNum:'       + CONVERT(VARCHAR(5),
+                                         ERROR_NUMBER())                   + ',Severity:'       + CONVERT(VARCHAR(5),
+                                         ERROR_SEVERITY())          + ',State:'          + CONVERT(VARCHAR(10),
+                                         ERROR_STATE())                    + ',Procedure:'      + CONVERT(VARCHAR(25),
+                                         OBJECT_NAME(@@procid))     + ',Procedure:'      + CONVERT(VARCHAR(25),
+                                         ERROR_PROCEDURE())
+ 
+              RAISERROR(@ErrorMsg, 16, 1)
+             
+       END CATCH   
+END
+ 
+GO
+ 
+ 
