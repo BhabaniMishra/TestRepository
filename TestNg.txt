@@ -1,0 +1,57 @@
+http://www.tothenew.com/blog/working-with-testng-annotations-part1/
+https://examples.javacodegeeks.com/enterprise-java/testng/testng-parameters-annotation-example/
+
+
+EXCEPTIONS IN TESTNG HANDLING:
+@Test(expectedExceptions=ArithmeticException.class)
+@Test(expectedExceptions=ArithmeticException.class)
+
+ENABLE AND DISABLE TESTS IN TestNG
+@Test(enabled=<true/false>)
+
+Priority
+@Test(priority=2)
+
+Optional Parameter
+
+    @Parameters("exampleDesc")
+    @Test
+    public void t(@Optional("TestNG Examples") 
+
+Multiple Parameter
+@Parameters({"category", "exampleDesc"})
+
+Configuration methods with Parameters
+
+public class TestNgConfigParameterExample {
+
+    @Parameters("param")
+
+    @BeforeTest
+
+    public void beforeTest(String p) {
+
+        System.out.println("beforeTest parameter: " + p);
+
+   }
+
+<?xml version="1.0" encoding="UTF-8"?>
+02
+<suite name="TestNgParametersSuite" parallel="false">
+03
+  <parameter name="param" value="TestNG Parameter Example"></parameter>
+04
+    <test name="TestNgParametersTest">
+05
+        <classes>
+06
+            <class
+07
+                name="com.javacodegeeks.testng.parameters.TestNgConfigParameterExample" />
+08
+        </classes>
+09
+    </test>
+10
+</suite>
+
